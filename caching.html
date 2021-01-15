@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="generator" content="pandoc">
+  <meta name="author" content="Andrew Brookins">
+  <meta name="dcterms.date" content="2021-01-13">
+  <title>Advanced Caching Patterns with Django</title>
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, minimal-ui">
+  <link rel="stylesheet" href="https://unpkg.com/reveal.js@^4//dist/reset.css">
+  <link rel="stylesheet" href="https://unpkg.com/reveal.js@^4//dist/reveal.css">
+  <style>
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    span.underline{text-decoration: underline;}
+    div.column{display: inline-block; vertical-align: top; width: 50%;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    ul.task-list{list-style: none;}
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+  <link rel="stylesheet" href="https://unpkg.com/reveal.js@^4//dist/theme/black.css" id="theme">
+</head>
+<body>
+  <div class="reveal">
+    <div class="slides">
+
+<section id="title-slide">
+  <h1 class="title">Advanced Caching Patterns with Django</h1>
+  <p class="author">Andrew Brookins</p>
+  <p class="date">January 13, 2021</p>
+</section>
+
+<section>
+<section id="advanced-caching-patterns-with-django" class="title-slide slide level1">
+<h1>Advanced Caching Patterns with Django</h1>
+
+</section>
+<section id="notes" class="slide level2">
+<h2>Notes</h2>
+<ul>
+<li class="fragment">Read-through, write-through, and write-behind are typically features of commercial cashes</li>
+<li class="fragment">Commercial examples: <a href="https://hazelcast.com/">Hazelcast</a>, <a href="https://www.oracle.com/middleware/technologies/coherence.html">Oracle Coherence</a></li>
+<li class="fragment">(Sort of) non-commercial examples: <a href="https://github.com/RedisGears/rgsync">Redis Gears RGSync recipe</a>, <a href="https://github.com/redisson/redisson/wiki/7.-distributed-collections#write-behind-asynchronous-strategy">Redisson</a></li>
+</ul>
+</section>
+<section id="look-aside" class="slide level2">
+<h2>Look Aside</h2>
+<p>“Application reads from the cache and lazy-loads from the database.”</p>
+</section>
+<section class="slide level2">
+
+<pre><code>    App    Cache
+    ----------------------
+    &lt;- Read from cache
+    .     .
+    .     (Found?)
+    .     &lt;- Return data
+    &lt;- Return data
+    .     .
+    .     (Not found?)
+    &lt;- Read from database
+    -&gt; Set in cache
+    &lt;- Return data</code></pre>
+</section>
+<section class="slide level2">
+
+<p>Look Aside is the most common caching pattern in Django apps.</p>
+</section>
+<section class="slide level2">
+
+<p>We’ll start with it to provide a base of comparison.</p>
+</section>
+<section class="slide level2">
+
+<ul>
+<li class="fragment">App reads from the cache</li>
+<li class="fragment">If an entry is missing, the app reads from the database and updates the cache (AKA, “lazy loading”)</li>
+<li class="fragment">Why? Simple, uses less cache memory</li>
+<li class="fragment">Why not? Only speeds up reads – not writes</li>
+</ul>
+</section>
+<section id="write-through" class="slide level2">
+<h2>Write Through</h2>
+<p>“Cache updates itself and the database synchronously.”</p>
+</section>
+<section class="slide level2">
+
+<pre><code>    App    Cache
+    --------------------------
+    -&gt; Read from cache
+    .      .
+    .      (Found)
+    .      &lt;- Return data
+    &lt;- Return data
+    .      .
+    .      (Not found)
+    .      -&gt; Set in cache (self)
+    .      -&gt; Set in database
+    .      &lt;- Return data
+    &lt;- Return data</code></pre>
+</section>
+<section class="slide level2">
+
+<ul>
+<li class="fragment">App always writes to the cache</li>
+<li class="fragment">Cache writes synchronously to the database – in other words, from the app’s perspective, when a write succeeds, the cache and database are consistent</li>
+<li class="fragment">Why? Strong consistency between cache and database</li>
+<li class="fragment">Why not? Uses more cache memory, slow writes (have to write to the cache <em>and</em> the database)</li>
+</ul>
+</section>
+<section id="write-behind" class="slide level2">
+<h2>Write Behind</h2>
+<p>“Cache updates itself and the database asynchronously.”</p>
+</section>
+<section class="slide level2">
+
+<pre><code>    App   Cache
+    --------------------------------------
+    .     .
+    -&gt; Read from cache
+    .     .
+    .     (Found)
+          &lt;- Return data
+    &lt;- Return data
+    .     .
+    .     (Not found)
+    .     -&gt; Set in cache (self)
+    .     -&gt; Save job in background thread
+    .     &lt;- Return data
+    &lt;- Return data
+    .     .
+    .     ...(Later, in background thread)
+    .     -&gt; Write data to database</code></pre>
+</section>
+<section class="slide level2">
+
+<ul>
+<li class="fragment">App always writes to the cache</li>
+<li class="fragment">Cache writes <strong>asynchronously</strong> to the database – in other words, from the app’s perspective, when a write succeeds, the change may not be written to the database</li>
+<li class="fragment">Why? <em>Fastest</em> writes</li>
+<li class="fragment">Why not? Uses more cache memory; consistency problems: chance that users won’t see their own writes, etc.</li>
+</ul>
+</section>
+<section id="write-through-with-application-logic" class="slide level2">
+<h2>Write Through with Application Logic</h2>
+<ul>
+<li class="fragment">Write through usually means the cache handles the writes</li>
+<li class="fragment">However, it’s also a way of populating the cache with recent changes</li>
+<li class="fragment">You can simulate Write Through by having Django update the cache when it saves/updates models</li>
+</ul>
+</section>
+<section id="write-behind-with-application-logic" class="slide level2">
+<h2>Write Behind with Application Logic</h2>
+<ul>
+<li class="fragment">Write behind also usually means the cache handles the writes</li>
+<li class="fragment">But the point is, ultimately, very fast writes</li>
+<li class="fragment">You can simulate Write Behind by having Django update the cache and save a background job for the DB write</li>
+</ul>
+</section>
+<section id="write-through-with-redis-gears" class="slide level2">
+<h2>Write Through with Redis Gears</h2>
+<ul>
+<li class="fragment">If you are using MySQL, SQLite, or Oracle, you can use the RGSync recipe with Redis Gears</li>
+<li class="fragment">This is an actual write through – the cache writes to the database</li>
+<li class="fragment">But it’s pretty new, and may be rough</li>
+<li class="fragment">With Postgres, you need to write your own Gears function, which is a “project”</li>
+</ul>
+</section>
+<section id="write-behind-with-redis-gears" class="slide level2">
+<h2>Write-Behind with Redis Gears</h2>
+<ul>
+<li class="fragment">Same as write through with Gears</li>
+<li class="fragment">Writing in the background, by using Streams or a List, gives you fast writes</li>
+<li class="fragment">With Postgres, you need to write your own Gears function, which is a “project”</li>
+</ul>
+</section>
+<section id="just-use-redis" class="slide level2">
+<h2>Just Use Redis</h2>
+<p>“The cache is the database.”</p>
+<ul>
+<li class="fragment">Redis has two forms of persistence: RDB and AOF</li>
+<li class="fragment">If you need extreme write speed, using Redis is going to beat a cache + database</li>
+<li class="fragment">You could periodically sync data from Redis to Postgres for querying/reporting</li>
+<li class="fragment">Or you might use a <a href="https://github.com/pg-redis-fdw/redis_fdw">Redis Foreign Data Wrapper</a> to expose Redis data in Postgres</li>
+</ul>
+</section></section>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/reveal.js@^4//dist/reveal.js"></script>
+
+  // reveal.js plugins
+  <script src="https://unpkg.com/reveal.js@^4//plugin/notes/notes.js"></script>
+  <script src="https://unpkg.com/reveal.js@^4//plugin/search/search.js"></script>
+  <script src="https://unpkg.com/reveal.js@^4//plugin/zoom/zoom.js"></script>
+
+  <script>
+
+      // Full list of configuration options available at:
+      // https://revealjs.com/config/
+      Reveal.initialize({
+        // Push each slide change to the browser history
+        history: true,
+
+        // reveal.js plugins
+        plugins: [
+          RevealNotes,
+          RevealSearch,
+          RevealZoom
+        ]
+      });
+    </script>
+    </body>
+</html>
